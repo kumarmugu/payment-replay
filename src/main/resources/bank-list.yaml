@@ -1,0 +1,20 @@
+# Bank List Configuration
+# Only log records with bank BIC present in this list will be processed.
+# This acts as a filter - records from banks NOT in this list are ignored.
+
+banks:
+  - bic: DBSSSGSG
+    name: DBS Bank
+    country: SG
+
+  - bic: OCBCSGSG
+    name: OCBC Bank
+    country: SG
+
+  - bic: UABORSGSG
+    name: United Overseas Bank
+    country: SG
+
+  - bic: HABORSGSG
+    name: HSBC Bank
+    country: SG

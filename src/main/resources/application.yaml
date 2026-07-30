@@ -1,0 +1,56 @@
+application:
+  name: payment-replay-tool
+  version: 1.0.0
+
+# Output directory for sanitized files
+output:
+  directory: ./output
+
+# Replay configuration
+replay:
+  # Grouping interval in seconds (60 = one minute batches)
+  groupingIntervalSeconds: 60
+  # Maximum messages per second
+  maxMessagesPerSecond: 250
+  # Input directory for sanitized files to replay
+  inputDirectory: ./output
+
+# Queue name pattern for filtering
+queue:
+  # Pattern: <BANK>_REQUEST.TO.G3_<G3_SITE_NO>
+  filterPattern: "{bank}_REQUEST.TO.G3_{siteNo}"
+
+# IBM MQ Configuration
+mq:
+  site1:
+    queueManager: QM_SITE1
+    host: mq-site1.example.com
+    port: 1414
+    channel: SVRCONN.SITE1
+    queueNamePrefix: ""
+    connectionTimeout: 30000
+    retryCount: 3
+    retryDelayMs: 5000
+    username: ""
+    password: ""
+  site2:
+    queueManager: QM_SITE2
+    host: mq-site2.example.com
+    port: 1414
+    channel: SVRCONN.SITE2
+    queueNamePrefix: ""
+    connectionTimeout: 30000
+    retryCount: 3
+    retryDelayMs: 5000
+    username: ""
+    password: ""
+
+# Metrics and reporting
+metrics:
+  enabled: true
+  reportIntervalSeconds: 60
+
+# Error reporting
+errorReport:
+  outputDirectory: ./reports
+  filenamePattern: "error-report-{date}.csv"

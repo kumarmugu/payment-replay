@@ -1,0 +1,3 @@
+Timestamp,RecordID,ErrorType,ErrorDescription,SourceFile,LineNumber
+2026-07-28 10:01:17.789,MSGID20260728003,BANK_MAPPING_ERROR,No UAT mapping for BIC: UNKNOWNBIC,/data/logs/sw1/raw-202607280001.log,5
+2026-07-28 10:03:45.123,MSGID20260728099,MQ_SEND_ERROR,"MQ put failed for queue 'DBSSSGS0_REQUEST.TO.G3_1' on site 1: CompCode=2, Reason=2009",/output/sw1/raw-202607280001.log,42

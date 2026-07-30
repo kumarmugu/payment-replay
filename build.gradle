@@ -1,0 +1,82 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.payment.replay'
+version = '1.0.0'
+sourceCompatibility = '1.8'
+targetCompatibility = '1.8'
+
+application {
+    mainClassName = 'com.payment.replay.PaymentReplayApplication'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // YAML parsing
+    implementation 'org.yaml:snakeyaml:1.33'
+
+    // XML processing (JAXB for Java 8)
+    implementation 'javax.xml.bind:jaxb-api:2.3.1'
+    implementation 'org.glassfish.jaxb:jaxb-runtime:2.3.6'
+
+    // Logging - SLF4J + Log4j2
+    implementation 'org.slf4j:slf4j-api:1.7.36'
+    implementation 'org.apache.logging.log4j:log4j-core:2.20.0'
+    implementation 'org.apache.logging.log4j:log4j-api:2.20.0'
+    implementation 'org.apache.logging.log4j:log4j-slf4j-impl:2.20.0'
+
+    // IBM MQ Client 9.3
+    implementation 'com.ibm.mq:com.ibm.mq.allclient:9.3.4.0'
+
+    // Apache Commons for utility functions
+    implementation 'org.apache.commons:commons-lang3:3.12.0'
+    implementation 'commons-io:commons-io:2.11.0'
+
+    // Testing
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:3.12.4'
+    testImplementation 'org.assertj:assertj-core:3.24.2'
+}
+
+jar {
+    manifest {
+        attributes(
+            'Main-Class': 'com.payment.replay.PaymentReplayApplication',
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version
+        )
+    }
+}
+
+// Create fat JAR with all dependencies
+task fatJar(type: Jar) {
+    archiveBaseName = 'payment-replay-tool'
+    archiveClassifier = 'all'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    manifest {
+        attributes(
+            'Main-Class': 'com.payment.replay.PaymentReplayApplication'
+        )
+    }
+
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    with jar
+}
+
+test {
+    useJUnit()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        showExceptions true
+        showCauses true
+        showStackTraces true
+    }
+}

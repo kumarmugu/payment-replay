@@ -1,0 +1,75 @@
+# Masking Field Configuration
+# Define XML fields that contain sensitive data and must be masked.
+# Adding new fields here requires NO code changes.
+#
+# Supported strategies:
+#   FULL_MASK        - Replace all characters with mask character
+#   KEEP_FIRST_N    - Keep first N characters, mask the rest
+#   KEEP_LAST_N     - Keep last N characters, mask the rest
+#   CUSTOM_PATTERN  - Apply a regex-based custom mask pattern
+#
+# Field path uses simplified XPath-like notation:
+#   Parent/Child/Element - matches element regardless of namespace
+#
+# Parameters:
+#   n             - Number of characters to keep (for KEEP_FIRST_N, KEEP_LAST_N)
+#   maskChar      - Character used for masking (default: *)
+#   pattern       - Regex pattern for CUSTOM_PATTERN strategy
+#   replacement   - Replacement pattern for CUSTOM_PATTERN strategy
+
+fields:
+  - path: "DbtrAcct/Id/Othr/Id"
+    strategy: KEEP_LAST_4
+    parameters:
+      n: 4
+      maskChar: "*"
+
+  - path: "CdtrAcct/Id/Othr/Id"
+    strategy: KEEP_LAST_4
+    parameters:
+      n: 4
+      maskChar: "*"
+
+  - path: "Cdtr/Nm"
+    strategy: FULL_MASK
+    parameters:
+      maskChar: "X"
+
+  - path: "Dbtr/Nm"
+    strategy: FULL_MASK
+    parameters:
+      maskChar: "X"
+
+  - path: "DbtrAcct/Id/IBAN"
+    strategy: KEEP_LAST_4
+    parameters:
+      n: 4
+      maskChar: "*"
+
+  - path: "CdtrAcct/Id/IBAN"
+    strategy: KEEP_LAST_4
+    parameters:
+      n: 4
+      maskChar: "*"
+
+  - path: "Cdtr/PstlAdr/AdrLine"
+    strategy: FULL_MASK
+    parameters:
+      maskChar: "X"
+
+  - path: "Dbtr/PstlAdr/AdrLine"
+    strategy: FULL_MASK
+    parameters:
+      maskChar: "X"
+
+  - path: "RmtInf/Ustrd"
+    strategy: KEEP_FIRST_N
+    parameters:
+      n: 4
+      maskChar: "*"
+
+  - path: "Id/PrvtId/Othr/Id"
+    strategy: KEEP_LAST_4
+    parameters:
+      n: 4
+      maskChar: "*"

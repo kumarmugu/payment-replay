@@ -1,0 +1,14 @@
+# Bank Mapping Configuration
+# Maps production BIC codes to UAT BIC codes for sanitized replay
+banks:
+  - productionBic: DBSSSGSG
+    uatBic: DBSSSGS0
+
+  - productionBic: OCBCSGSG
+    uatBic: OCBCUTS0
+
+  - productionBic: UABORSGSG
+    uatBic: UABORSGS0
+
+  - productionBic: HABORSGSG
+    uatBic: HABORSGS0
