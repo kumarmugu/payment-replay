@@ -17,7 +17,6 @@ Thumbs.db
 
 # Application runtime
 logs/
-output/
 reports/
 
 # Kiro
