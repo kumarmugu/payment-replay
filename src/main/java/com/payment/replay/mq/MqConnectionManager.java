@@ -141,9 +141,6 @@ public final class MqConnectionManager {
         properties.put(MQConstants.CHANNEL_PROPERTY, siteConfig.getChannel());
         properties.put(MQConstants.TRANSPORT_PROPERTY, MQConstants.TRANSPORT_MQSERIES_CLIENT);
 
-        // Connection timeout
-        properties.put(MQConstants.CONNECT_OPTIONS_PROPERTY, MQConstants.MQCNO_CLIENT_BINDING);
-
         // Authentication if configured
         if (siteConfig.hasCredentials()) {
             properties.put(MQConstants.USER_ID_PROPERTY, siteConfig.getUsername());

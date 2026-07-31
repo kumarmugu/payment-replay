@@ -63,7 +63,8 @@ public final class MaskingService {
 
     /**
      * Masks a specific field within the XML based on the field configuration.
-     * Uses path-based matching to find the target element.
+     * Finds all occurrences of the leaf element that are nested within the parent path
+     * and applies the masking strategy to their text content.
      *
      * @param xml         current XML string
      * @param fieldConfig field to mask
@@ -77,151 +78,131 @@ public final class MaskingService {
 
         MaskingStrategy strategy = strategyFactory.getStrategy(fieldConfig.getStrategy());
 
-        // Use iterative approach to find and mask all occurrences
-        StringBuilder result = new StringBuilder(xml.length());
-        int pos = 0;
+        // For single segment paths, find all occurrences of the element and mask
+        if (pathSegments.length == 1) {
+            return maskAllOccurrences(xml, pathSegments[0], strategy, fieldConfig);
+        }
 
-        while (pos < xml.length()) {
-            int matchStart = findPathMatch(xml, pos, pathSegments);
+        // For multi-segment paths, find the outermost parent context first,
+        // then mask the leaf element within that context
+        String result = xml;
+        String firstSegment = pathSegments[0];
+        int searchFrom = 0;
 
-            if (matchStart < 0) {
-                // No more matches, append rest of XML
-                result.append(xml, pos, xml.length());
+        StringBuilder sb = new StringBuilder(result.length());
+
+        while (searchFrom < result.length()) {
+            int parentStart = findOpeningTag(result, searchFrom, firstSegment);
+            if (parentStart < 0) {
+                sb.append(result, searchFrom, result.length());
                 break;
             }
 
-            // Append everything before the match
-            result.append(xml, pos, matchStart);
+            // Append everything before this parent
+            sb.append(result, searchFrom, parentStart);
 
-            // Find the innermost element (last segment) content
-            String targetElement = pathSegments[pathSegments.length - 1];
-            int contentStart = findElementContentStart(xml, matchStart, targetElement);
-
-            if (contentStart < 0) {
-                // Could not find element content, append as-is and move on
-                result.append(xml.charAt(matchStart));
-                pos = matchStart + 1;
+            // Find closing tag of parent
+            int parentContentStart = findElementContentStart(result, parentStart, firstSegment);
+            if (parentContentStart < 0) {
+                sb.append(result.charAt(parentStart));
+                searchFrom = parentStart + 1;
                 continue;
             }
 
-            int contentEnd = findElementContentEnd(xml, contentStart, targetElement);
+            int parentCloseStart = findClosingTagEnd(result, parentStart, firstSegment);
+            if (parentCloseStart < 0) {
+                sb.append(result, parentStart, parentContentStart);
+                searchFrom = parentContentStart;
+                continue;
+            }
 
+            // Find the actual closing tag > position
+            int parentEnd = result.indexOf('>', parentCloseStart);
+            if (parentEnd < 0) {
+                sb.append(result, parentStart, parentContentStart);
+                searchFrom = parentContentStart;
+                continue;
+            }
+            parentEnd++; // include the '>'
+
+            // Extract full parent block
+            String parentBlock = result.substring(parentStart, parentEnd);
+
+            // Check if this block contains all intermediate path segments
+            if (containsPath(parentBlock, pathSegments, 1)) {
+                // Mask the leaf element within this block
+                String leafElement = pathSegments[pathSegments.length - 1];
+                String maskedBlock = maskAllOccurrences(parentBlock, leafElement, strategy, fieldConfig);
+                sb.append(maskedBlock);
+            } else {
+                sb.append(parentBlock);
+            }
+
+            searchFrom = parentStart + parentBlock.length();
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Checks if an XML fragment contains all path segments in order (from index onwards).
+     */
+    private boolean containsPath(String xml, String[] segments, int fromIndex) {
+        for (int i = fromIndex; i < segments.length; i++) {
+            if (findOpeningTag(xml, 0, segments[i]) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Masks all occurrences of a specific element in the given XML string.
+     */
+    private String maskAllOccurrences(String xml, String elementName, MaskingStrategy strategy, MaskFieldConfig fieldConfig) {
+        StringBuilder sb = new StringBuilder(xml.length());
+        int pos = 0;
+
+        while (pos < xml.length()) {
+            int tagStart = findOpeningTag(xml, pos, elementName);
+            if (tagStart < 0) {
+                sb.append(xml, pos, xml.length());
+                break;
+            }
+
+            sb.append(xml, pos, tagStart);
+
+            int contentStart = findElementContentStart(xml, tagStart, elementName);
+            if (contentStart < 0) {
+                sb.append(xml.charAt(tagStart));
+                pos = tagStart + 1;
+                continue;
+            }
+
+            int contentEnd = findElementContentEnd(xml, contentStart, elementName);
             if (contentEnd < 0) {
-                // Malformed XML, skip this match
-                result.append(xml, matchStart, contentStart);
+                sb.append(xml, tagStart, contentStart);
                 pos = contentStart;
                 continue;
             }
 
-            // Extract original value and apply masking
-            String originalValue = xml.substring(contentStart, contentEnd);
+            String content = xml.substring(contentStart, contentEnd);
 
-            // Only mask text content (skip if it contains child elements)
-            if (!originalValue.contains("<")) {
-                String maskedValue = strategy.mask(originalValue.trim(), fieldConfig);
-                // Append up to content start, then masked value, then continue after content
-                result.append(xml, matchStart, contentStart);
-                result.append(maskedValue);
+            // Only mask text content (no child elements)
+            if (!content.contains("<")) {
+                String masked = strategy.mask(content.trim(), fieldConfig);
+                // Append opening tag + masked content
+                sb.append(xml, tagStart, contentStart);
+                sb.append(masked);
                 pos = contentEnd;
             } else {
-                // Content has nested elements, don't mask at this level
-                result.append(xml, matchStart, contentStart);
+                // Has children, append opening tag and continue inside
+                sb.append(xml, tagStart, contentStart);
                 pos = contentStart;
             }
         }
 
-        return result.toString();
-    }
-
-    /**
-     * Finds the start position of a path match in the XML.
-     * Looks for the opening tag of the first path segment, then validates
-     * that subsequent segments are nested within.
-     *
-     * @param xml          XML string to search
-     * @param startPos     position to start searching from
-     * @param pathSegments ordered path segments to match
-     * @return position of the outermost matching element's opening '<', or -1
-     */
-    private int findPathMatch(String xml, int startPos, String[] pathSegments) {
-        if (pathSegments.length == 0) {
-            return -1;
-        }
-
-        // For single-segment paths, just find the element
-        if (pathSegments.length == 1) {
-            return findOpeningTag(xml, startPos, pathSegments[0]);
-        }
-
-        // For multi-segment paths, find parent context first
-        int searchFrom = startPos;
-
-        while (searchFrom < xml.length()) {
-            // Find the first segment
-            int firstSegmentPos = findOpeningTag(xml, searchFrom, pathSegments[0]);
-            if (firstSegmentPos < 0) {
-                return -1;
-            }
-
-            // Verify remaining segments are nested inside
-            int closingTagEnd = findClosingTagEnd(xml, firstSegmentPos, pathSegments[0]);
-            if (closingTagEnd < 0) {
-                searchFrom = firstSegmentPos + 1;
-                continue;
-            }
-
-            // Extract content between first segment tags
-            int firstContentStart = findElementContentStart(xml, firstSegmentPos, pathSegments[0]);
-            if (firstContentStart < 0) {
-                searchFrom = firstSegmentPos + 1;
-                continue;
-            }
-
-            String parentContent = xml.substring(firstContentStart, closingTagEnd);
-
-            // Check if remaining path segments exist within this parent
-            if (validateNestedPath(parentContent, pathSegments, 1)) {
-                return firstSegmentPos;
-            }
-
-            searchFrom = firstSegmentPos + 1;
-        }
-
-        return -1;
-    }
-
-    /**
-     * Validates that path segments starting at index are nested within the content.
-     */
-    private boolean validateNestedPath(String content, String[] segments, int fromIndex) {
-        if (fromIndex >= segments.length) {
-            return true;
-        }
-
-        String segment = segments[fromIndex];
-        int tagPos = findOpeningTag(content, 0, segment);
-
-        if (tagPos < 0) {
-            return false;
-        }
-
-        if (fromIndex == segments.length - 1) {
-            return true;
-        }
-
-        // Look inside this element for the next segment
-        int contentStart = findElementContentStart(content, tagPos, segment);
-        if (contentStart < 0) {
-            return false;
-        }
-
-        int closingEnd = findClosingTagEnd(content, tagPos, segment);
-        if (closingEnd < 0) {
-            return false;
-        }
-
-        String nestedContent = content.substring(contentStart, closingEnd);
-        return validateNestedPath(nestedContent, segments, fromIndex + 1);
+        return sb.toString();
     }
 
     /**
