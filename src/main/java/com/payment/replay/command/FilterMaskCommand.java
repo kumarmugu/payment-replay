@@ -185,13 +185,10 @@ public final class FilterMaskCommand implements Command {
             // Step 2: Replace production BIC with UAT BIC in XML
             String mappedXml;
             String mappedBic;
-            String mappedQueueName;
 
             if (bankMappingService.hasMappingFor(record.getBankBic())) {
                 mappedXml = bankMappingService.replaceInXml(maskedXml, record.getBankBic());
                 mappedBic = bankMappingService.mapToUat(record.getBankBic());
-                mappedQueueName = bankMappingService.replaceInQueueName(
-                        record.getQueueName(), record.getBankBic());
             } else {
                 // No mapping available - use original values but log warning
                 log.warn("No bank mapping for BIC: {} in record at {}:{}",
@@ -205,14 +202,17 @@ public final class FilterMaskCommand implements Command {
                         record.getLineNumber()));
                 mappedXml = maskedXml;
                 mappedBic = record.getBankBic();
-                mappedQueueName = record.getQueueName();
             }
 
-            // Step 3: Build masked record
+            // Step 3: Derive UAT queue name from mapped BIC + site number
+            // Pattern: <uatBic>_REQUEST.TO.G3_<siteNo>
+            String derivedQueueName = record.deriveQueueName(mappedBic);
+
+            // Step 4: Build masked record
             MaskedRecord maskedRecord = MaskedRecord.fromLogRecord(record)
                     .maskedXmlPayload(mappedXml)
                     .mappedBankBic(mappedBic)
-                    .mappedQueueName(mappedQueueName)
+                    .derivedQueueName(derivedQueueName)
                     .build();
 
             // Step 4: Write to output file

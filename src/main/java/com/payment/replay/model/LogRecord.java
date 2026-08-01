@@ -2,9 +2,16 @@ package com.payment.replay.model;
 
 /**
  * Represents a single parsed log record from the production log files.
- * 
- * Log format:
- * <datetime in utc>,mq,<direction>,<bank bic>,<switch name>,<Msg type>,valid>,<instra id>,<MsgId>...<MQ name>...<XML Message>
+ *
+ * Actual log format (no queue name — queue is derived at processing time):
+ * <datetime>,mq,<direction>,<bank_bic>,<switch>-MQ<siteNo>,<msg_type>,valid,<instr_id>,<msg_id>,iso20022,raw,<XML>
+ *
+ * Examples:
+ *   2026-07-30T08:56:02.448660,mq,in,NFCCSGSG,switch2UG3IPSSWITC1-MQ1,pacs.002.001.03,valid,INSTR001,MSG001,iso20022,raw,<?xml ...>
+ *   2026-07-30T22:52:02.565271,mq,in,ZYBNSGSG,switch1UG3IPSSWITC1-MQ1,admn.005.001.01,valid,INSTR002,MSG002,iso20022,raw,<?xml ...>
+ *
+ * Filter criteria: direction == "in" AND msgType in (pacs.008, admn.005)
+ * Site number is extracted from the switch name suffix: -MQ1 or -MQ2
  *
  * This class is immutable after construction to ensure thread safety.
  */
@@ -14,11 +21,11 @@ public final class LogRecord {
     private final String direction;
     private final String bankBic;
     private final String switchName;
+    private final String siteNo;
     private final String messageType;
     private final String validFlag;
     private final String instructionId;
     private final String messageId;
-    private final String queueName;
     private final String xmlPayload;
     private final String sourceFile;
     private final long lineNumber;
@@ -28,87 +35,50 @@ public final class LogRecord {
         this.direction = builder.direction;
         this.bankBic = builder.bankBic;
         this.switchName = builder.switchName;
+        this.siteNo = builder.siteNo;
         this.messageType = builder.messageType;
         this.validFlag = builder.validFlag;
         this.instructionId = builder.instructionId;
         this.messageId = builder.messageId;
-        this.queueName = builder.queueName;
         this.xmlPayload = builder.xmlPayload;
         this.sourceFile = builder.sourceFile;
         this.lineNumber = builder.lineNumber;
     }
 
-    public String getTimestamp() {
-        return timestamp;
-    }
-
-    public String getDirection() {
-        return direction;
-    }
-
-    public String getBankBic() {
-        return bankBic;
-    }
-
-    public String getSwitchName() {
-        return switchName;
-    }
-
-    public String getMessageType() {
-        return messageType;
-    }
-
-    public String getValidFlag() {
-        return validFlag;
-    }
-
-    public String getInstructionId() {
-        return instructionId;
-    }
-
-    public String getMessageId() {
-        return messageId;
-    }
-
-    public String getQueueName() {
-        return queueName;
-    }
-
-    public String getXmlPayload() {
-        return xmlPayload;
-    }
-
-    public String getSourceFile() {
-        return sourceFile;
-    }
-
-    public long getLineNumber() {
-        return lineNumber;
-    }
+    public String getTimestamp() { return timestamp; }
+    public String getDirection() { return direction; }
+    public String getBankBic() { return bankBic; }
+    public String getSwitchName() { return switchName; }
+    public String getSiteNo() { return siteNo; }
+    public String getMessageType() { return messageType; }
+    public String getValidFlag() { return validFlag; }
+    public String getInstructionId() { return instructionId; }
+    public String getMessageId() { return messageId; }
+    public String getXmlPayload() { return xmlPayload; }
+    public String getSourceFile() { return sourceFile; }
+    public long getLineNumber() { return lineNumber; }
 
     /**
-     * Extracts the site number from the queue name pattern: BANK_REQUEST.TO.G3_<siteNo>
-     *
-     * @return site number string or empty string if not parseable
+     * Returns the site number (1 or 2) extracted from the switch name suffix (-MQ1 / -MQ2).
+     * Defaults to "1" if not determinable.
      */
     public String extractSiteNumber() {
-        if (queueName == null || !queueName.contains("G3_")) {
-            return "";
-        }
-        int idx = queueName.lastIndexOf("G3_");
-        return queueName.substring(idx + 3);
+        return siteNo != null && !siteNo.isEmpty() ? siteNo : "1";
     }
 
     /**
-     * Extracts the bank prefix from the queue name pattern: <BANK>_REQUEST.TO.G3_<siteNo>
-     *
-     * @return bank prefix from queue name
+     * Derives the destination MQ queue name from the bank BIC and site number.
+     * Pattern: <bankBic>_REQUEST.TO.G3_<siteNo>
      */
-    public String extractBankFromQueue() {
-        if (queueName == null || !queueName.contains("_REQUEST")) {
-            return "";
-        }
-        return queueName.substring(0, queueName.indexOf("_REQUEST"));
+    public String deriveQueueName() {
+        return bankBic + "_REQUEST.TO.G3_" + extractSiteNumber();
+    }
+
+    /**
+     * Derives the destination MQ queue name using the given (mapped) BIC.
+     */
+    public String deriveQueueName(String bic) {
+        return bic + "_REQUEST.TO.G3_" + extractSiteNumber();
     }
 
     @Override
@@ -116,7 +86,9 @@ public final class LogRecord {
         return "LogRecord{" +
                 "timestamp='" + timestamp + '\'' +
                 ", bankBic='" + bankBic + '\'' +
-                ", queueName='" + queueName + '\'' +
+                ", switchName='" + switchName + '\'' +
+                ", siteNo='" + siteNo + '\'' +
+                ", messageType='" + messageType + '\'' +
                 ", messageId='" + messageId + '\'' +
                 ", sourceFile='" + sourceFile + '\'' +
                 ", lineNumber=" + lineNumber +
@@ -132,80 +104,30 @@ public final class LogRecord {
         private String direction;
         private String bankBic;
         private String switchName;
+        private String siteNo;
         private String messageType;
         private String validFlag;
         private String instructionId;
         private String messageId;
-        private String queueName;
         private String xmlPayload;
         private String sourceFile;
         private long lineNumber;
 
-        private Builder() {
-        }
+        private Builder() {}
 
-        public Builder timestamp(String timestamp) {
-            this.timestamp = timestamp;
-            return this;
-        }
+        public Builder timestamp(String v)     { this.timestamp = v;     return this; }
+        public Builder direction(String v)     { this.direction = v;     return this; }
+        public Builder bankBic(String v)       { this.bankBic = v;       return this; }
+        public Builder switchName(String v)    { this.switchName = v;    return this; }
+        public Builder siteNo(String v)        { this.siteNo = v;        return this; }
+        public Builder messageType(String v)   { this.messageType = v;   return this; }
+        public Builder validFlag(String v)     { this.validFlag = v;     return this; }
+        public Builder instructionId(String v) { this.instructionId = v; return this; }
+        public Builder messageId(String v)     { this.messageId = v;     return this; }
+        public Builder xmlPayload(String v)    { this.xmlPayload = v;    return this; }
+        public Builder sourceFile(String v)    { this.sourceFile = v;    return this; }
+        public Builder lineNumber(long v)      { this.lineNumber = v;    return this; }
 
-        public Builder direction(String direction) {
-            this.direction = direction;
-            return this;
-        }
-
-        public Builder bankBic(String bankBic) {
-            this.bankBic = bankBic;
-            return this;
-        }
-
-        public Builder switchName(String switchName) {
-            this.switchName = switchName;
-            return this;
-        }
-
-        public Builder messageType(String messageType) {
-            this.messageType = messageType;
-            return this;
-        }
-
-        public Builder validFlag(String validFlag) {
-            this.validFlag = validFlag;
-            return this;
-        }
-
-        public Builder instructionId(String instructionId) {
-            this.instructionId = instructionId;
-            return this;
-        }
-
-        public Builder messageId(String messageId) {
-            this.messageId = messageId;
-            return this;
-        }
-
-        public Builder queueName(String queueName) {
-            this.queueName = queueName;
-            return this;
-        }
-
-        public Builder xmlPayload(String xmlPayload) {
-            this.xmlPayload = xmlPayload;
-            return this;
-        }
-
-        public Builder sourceFile(String sourceFile) {
-            this.sourceFile = sourceFile;
-            return this;
-        }
-
-        public Builder lineNumber(long lineNumber) {
-            this.lineNumber = lineNumber;
-            return this;
-        }
-
-        public LogRecord build() {
-            return new LogRecord(this);
-        }
+        public LogRecord build() { return new LogRecord(this); }
     }
 }

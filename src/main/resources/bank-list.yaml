@@ -1,6 +1,6 @@
 # Bank List Configuration
 # Only log records with bank BIC present in this list will be processed.
-# This acts as a filter - records from banks NOT in this list are ignored.
+# Records from banks NOT in this list are silently ignored.
 
 banks:
   - bic: DBSSSGSG
@@ -16,5 +16,9 @@ banks:
     country: SG
 
   - bic: HABORSGSG
-    name: HSBC Bank
+    name: HSBC Bank Singapore
+    country: SG
+
+  - bic: ZYBNSGSG
+    name: Maybank Singapore
     country: SG

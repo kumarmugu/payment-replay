@@ -1,5 +1,7 @@
 # Bank Mapping Configuration
-# Maps production BIC codes to UAT BIC codes for sanitized replay
+# Maps production BIC codes to UAT BIC codes.
+# Applied to both the XML payload and the derived queue name.
+
 banks:
   - productionBic: DBSSSGSG
     uatBic: DBSSSGS0
@@ -12,3 +14,6 @@ banks:
 
   - productionBic: HABORSGSG
     uatBic: HABORSGS0
+
+  - productionBic: ZYBNSGSG
+    uatBic: ZYBNSGS0

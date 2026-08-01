@@ -9,7 +9,7 @@ output:
 # Replay configuration
 replay:
   # Grouping interval in seconds (60 = one minute batches)
-  groupingIntervalSeconds: 60
+  groupingIntervalSeconds: 10
   # Maximum messages per second
   maxMessagesPerSecond: 250
   # Input directory for sanitized files to replay
