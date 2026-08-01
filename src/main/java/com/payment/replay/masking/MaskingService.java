@@ -5,19 +5,31 @@ import com.payment.replay.exception.MaskingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.List;
 
 /**
- * Orchestrates XML masking by applying configured masking strategies to sensitive fields.
+ * Orchestrates XML masking for all configured sensitive fields.
  *
- * Uses a lightweight streaming XML approach that processes the XML character by character,
- * identifying elements by their path context and applying the appropriate masking strategy
- * when a configured field is found.
+ * NAMESPACE HANDLING
+ * ------------------
+ * Real-world ISO 20022 XML from different banks uses different namespace prefixes
+ * for identical elements, e.g.:
  *
- * This approach avoids full DOM parsing for performance and handles arbitrary namespaces
- * by matching on local element names only (namespace-agnostic matching).
+ *   Bank A:  <ns3:DbtrAcct>...</ns3:DbtrAcct>
+ *   Bank B:  <pacs:DbtrAcct>...</pacs:DbtrAcct>
+ *   Bank C:  <DbtrAcct>...</DbtrAcct>          (no prefix)
+ *
+ * All three must match the mask-fields.yaml path "DbtrAcct/Id/Othr/Id".
+ *
+ * Strategy: every tag-matching operation strips the namespace prefix (the part
+ * before the first colon in the element name token) before comparing, so matching
+ * is always on the local element name only.  This makes masking completely
+ * namespace-prefix-agnostic without requiring a full DOM parse.
+ *
+ * PERFORMANCE
+ * -----------
+ * Works on the raw XML string with a single linear pass per configured field.
+ * No DOM/SAX overhead.  Safe for very large XML payloads (>1 MB).
  */
 public final class MaskingService {
 
@@ -32,22 +44,16 @@ public final class MaskingService {
     }
 
     /**
-     * Applies masking to all configured sensitive fields in the XML payload.
+     * Applies every configured masking rule to the XML payload.
      *
-     * Processing approach:
-     * 1. Track XML element path using a stack
-     * 2. For each element, check if current path matches any configured mask field
-     * 3. If match found, apply the configured masking strategy to the element's text content
-     *
-     * @param xml original XML payload
-     * @return XML with sensitive fields masked
-     * @throws MaskingException if XML cannot be processed
+     * @param xml original XML (may be null / empty — returned as-is)
+     * @return XML with all sensitive fields masked
+     * @throws MaskingException on unrecoverable parsing failure
      */
     public String maskXml(String xml) {
         if (xml == null || xml.isEmpty()) {
             return xml;
         }
-
         try {
             String result = xml;
             for (MaskFieldConfig fieldConfig : maskFields) {
@@ -61,79 +67,72 @@ public final class MaskingService {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Core masking logic
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Masks a specific field within the XML based on the field configuration.
-     * Finds all occurrences of the leaf element that are nested within the parent path
-     * and applies the masking strategy to their text content.
+     * Masks one configured field throughout the XML.
      *
-     * @param xml         current XML string
-     * @param fieldConfig field to mask
-     * @return XML with the specified field masked
+     * For single-segment paths (e.g. "Nm") every occurrence is masked.
+     * For multi-segment paths (e.g. "DbtrAcct/Id/Othr/Id") the outermost
+     * parent block is extracted first, then the leaf element is masked within it.
+     * This prevents false positives when the same local name appears in a
+     * different context.
      */
     private String maskField(String xml, MaskFieldConfig fieldConfig) {
-        String[] pathSegments = fieldConfig.getPathSegments();
-        if (pathSegments.length == 0) {
+        String[] segments = fieldConfig.getPathSegments();
+        if (segments.length == 0) {
             return xml;
         }
 
         MaskingStrategy strategy = strategyFactory.getStrategy(fieldConfig.getStrategy());
 
-        // For single segment paths, find all occurrences of the element and mask
-        if (pathSegments.length == 1) {
-            return maskAllOccurrences(xml, pathSegments[0], strategy, fieldConfig);
+        if (segments.length == 1) {
+            return maskAllOccurrences(xml, segments[0], strategy, fieldConfig);
         }
 
-        // For multi-segment paths, find the outermost parent context first,
-        // then mask the leaf element within that context
-        String result = xml;
-        String firstSegment = pathSegments[0];
+        // Multi-segment: locate the outermost parent, then mask the leaf inside it
+        StringBuilder sb = new StringBuilder(xml.length());
         int searchFrom = 0;
 
-        StringBuilder sb = new StringBuilder(result.length());
-
-        while (searchFrom < result.length()) {
-            int parentStart = findOpeningTag(result, searchFrom, firstSegment);
+        while (searchFrom < xml.length()) {
+            int parentStart = findOpeningTag(xml, searchFrom, segments[0]);
             if (parentStart < 0) {
-                sb.append(result, searchFrom, result.length());
+                sb.append(xml, searchFrom, xml.length());
                 break;
             }
 
-            // Append everything before this parent
-            sb.append(result, searchFrom, parentStart);
+            sb.append(xml, searchFrom, parentStart);
 
-            // Find closing tag of parent
-            int parentContentStart = findElementContentStart(result, parentStart, firstSegment);
+            int parentContentStart = findContentStart(xml, parentStart);
             if (parentContentStart < 0) {
-                sb.append(result.charAt(parentStart));
+                sb.append(xml.charAt(parentStart));
                 searchFrom = parentStart + 1;
                 continue;
             }
 
-            int parentCloseStart = findClosingTagEnd(result, parentStart, firstSegment);
-            if (parentCloseStart < 0) {
-                sb.append(result, parentStart, parentContentStart);
+            int parentCloseIdx = findClosingTagStart(xml, parentStart, segments[0]);
+            if (parentCloseIdx < 0) {
+                sb.append(xml, parentStart, parentContentStart);
                 searchFrom = parentContentStart;
                 continue;
             }
 
-            // Find the actual closing tag > position
-            int parentEnd = result.indexOf('>', parentCloseStart);
+            int parentEnd = xml.indexOf('>', parentCloseIdx);
             if (parentEnd < 0) {
-                sb.append(result, parentStart, parentContentStart);
+                sb.append(xml, parentStart, parentContentStart);
                 searchFrom = parentContentStart;
                 continue;
             }
-            parentEnd++; // include the '>'
+            parentEnd++; // include '>'
 
-            // Extract full parent block
-            String parentBlock = result.substring(parentStart, parentEnd);
+            String parentBlock = xml.substring(parentStart, parentEnd);
 
-            // Check if this block contains all intermediate path segments
-            if (containsPath(parentBlock, pathSegments, 1)) {
-                // Mask the leaf element within this block
-                String leafElement = pathSegments[pathSegments.length - 1];
-                String maskedBlock = maskAllOccurrences(parentBlock, leafElement, strategy, fieldConfig);
-                sb.append(maskedBlock);
+            // Only mask if all intermediate path segments are present inside parent
+            if (pathExistsIn(parentBlock, segments, 1)) {
+                String leafName = segments[segments.length - 1];
+                sb.append(maskAllOccurrences(parentBlock, leafName, strategy, fieldConfig));
             } else {
                 sb.append(parentBlock);
             }
@@ -145,21 +144,11 @@ public final class MaskingService {
     }
 
     /**
-     * Checks if an XML fragment contains all path segments in order (from index onwards).
+     * Masks every occurrence of {@code elementName} (local name, any namespace prefix)
+     * that contains only text content (no child elements).
      */
-    private boolean containsPath(String xml, String[] segments, int fromIndex) {
-        for (int i = fromIndex; i < segments.length; i++) {
-            if (findOpeningTag(xml, 0, segments[i]) < 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * Masks all occurrences of a specific element in the given XML string.
-     */
-    private String maskAllOccurrences(String xml, String elementName, MaskingStrategy strategy, MaskFieldConfig fieldConfig) {
+    private String maskAllOccurrences(String xml, String elementName,
+                                      MaskingStrategy strategy, MaskFieldConfig fieldConfig) {
         StringBuilder sb = new StringBuilder(xml.length());
         int pos = 0;
 
@@ -172,14 +161,14 @@ public final class MaskingService {
 
             sb.append(xml, pos, tagStart);
 
-            int contentStart = findElementContentStart(xml, tagStart, elementName);
+            int contentStart = findContentStart(xml, tagStart);
             if (contentStart < 0) {
                 sb.append(xml.charAt(tagStart));
                 pos = tagStart + 1;
                 continue;
             }
 
-            int contentEnd = findElementContentEnd(xml, contentStart, elementName);
+            int contentEnd = findTextContentEnd(xml, contentStart, elementName);
             if (contentEnd < 0) {
                 sb.append(xml, tagStart, contentStart);
                 pos = contentStart;
@@ -188,15 +177,14 @@ public final class MaskingService {
 
             String content = xml.substring(contentStart, contentEnd);
 
-            // Only mask text content (no child elements)
             if (!content.contains("<")) {
+                // Pure text — mask it
                 String masked = strategy.mask(content.trim(), fieldConfig);
-                // Append opening tag + masked content
                 sb.append(xml, tagStart, contentStart);
                 sb.append(masked);
                 pos = contentEnd;
             } else {
-                // Has children, append opening tag and continue inside
+                // Has child elements — descend without masking at this level
                 sb.append(xml, tagStart, contentStart);
                 pos = contentStart;
             }
@@ -205,169 +193,184 @@ public final class MaskingService {
         return sb.toString();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Namespace-aware XML scanning primitives
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Finds the position of an opening tag for the given element name.
-     * Handles namespace prefixes by matching on local name.
+     * Finds the next opening tag whose LOCAL element name equals {@code localName}.
      *
-     * Matches: <ElementName>, <ns:ElementName>, <ns:ElementName attr="val">
+     * Handles all of:
+     *   {@code <Nm>}
+     *   {@code <ns3:Nm>}
+     *   {@code <ns3:Nm attr="v">}
+     *   {@code <ns3:Nm/>}  — skipped (self-closing)
+     *
+     * Namespace prefix is stripped via {@link #localName(String)}.
+     *
+     * @return position of the opening {@code <}, or -1 if not found
      */
-    private int findOpeningTag(String xml, int startPos, String elementName) {
+    private int findOpeningTag(String xml, int startPos, String localName) {
         int pos = startPos;
-
         while (pos < xml.length()) {
-            int tagStart = xml.indexOf('<', pos);
-            if (tagStart < 0) {
-                return -1;
-            }
+            int lt = xml.indexOf('<', pos);
+            if (lt < 0) return -1;
 
-            // Skip closing tags and processing instructions
-            if (tagStart + 1 < xml.length() && (xml.charAt(tagStart + 1) == '/'
-                    || xml.charAt(tagStart + 1) == '?' || xml.charAt(tagStart + 1) == '!')) {
-                pos = tagStart + 1;
+            int next = lt + 1;
+            if (next >= xml.length()) return -1;
+
+            char ch = xml.charAt(next);
+
+            // Skip closing tags, XML declarations, comments, CDATA
+            if (ch == '/' || ch == '?' || ch == '!') {
+                pos = lt + 1;
                 continue;
             }
 
-            // Find end of tag
-            int tagEnd = xml.indexOf('>', tagStart);
-            if (tagEnd < 0) {
-                return -1;
-            }
+            int gt = xml.indexOf('>', lt);
+            if (gt < 0) return -1;
 
-            String tagContent = xml.substring(tagStart + 1, tagEnd);
-            // Remove self-closing slash if present
-            if (tagContent.endsWith("/")) {
-                pos = tagEnd + 1;
+            String tagBody = xml.substring(lt + 1, gt);
+
+            // Skip self-closing tags
+            if (tagBody.endsWith("/")) {
+                pos = gt + 1;
                 continue;
             }
 
-            // Extract element name (handle namespace prefix and attributes)
-            String localName = extractLocalName(tagContent);
-
-            if (elementName.equals(localName)) {
-                return tagStart;
+            if (localName.equals(localName(tokenName(tagBody)))) {
+                return lt;
             }
 
-            pos = tagEnd + 1;
+            pos = gt + 1;
         }
-
         return -1;
     }
 
     /**
-     * Finds the position immediately after the opening tag's '>' for element content.
+     * Finds the position immediately after the opening tag's closing {@code >}.
+     * This is where the element's content starts.
+     *
+     * @return index after {@code >}, or -1
      */
-    private int findElementContentStart(String xml, int tagStartPos, String elementName) {
-        int tagEnd = xml.indexOf('>', tagStartPos);
-        if (tagEnd < 0) {
-            return -1;
-        }
-        return tagEnd + 1;
+    private int findContentStart(String xml, int openingTagPos) {
+        int gt = xml.indexOf('>', openingTagPos);
+        return gt < 0 ? -1 : gt + 1;
     }
 
     /**
-     * Finds the start position of the closing tag for the given element.
-     * This is the position of the text content end.
+     * Finds the position of {@code </} that closes the element whose local name
+     * is {@code localName}, starting the search from {@code contentStartPos}.
+     *
+     * Correctly handles nested elements with the same local name by tracking depth.
+     * Namespace prefixes on closing tags are also stripped for comparison.
+     *
+     * @return position of {@code </...>} start, or -1
      */
-    private int findElementContentEnd(String xml, int contentStartPos, String elementName) {
-        // Look for closing tag: </elementName> or </ns:elementName>
+    private int findTextContentEnd(String xml, int contentStartPos, String localName) {
         int pos = contentStartPos;
-
         while (pos < xml.length()) {
-            int closingStart = xml.indexOf("</", pos);
-            if (closingStart < 0) {
-                return -1;
+            int close = xml.indexOf("</", pos);
+            if (close < 0) return -1;
+
+            int gt = xml.indexOf('>', close);
+            if (gt < 0) return -1;
+
+            String closingName = xml.substring(close + 2, gt).trim();
+            if (localName.equals(localName(closingName))) {
+                return close;
             }
-
-            int closingEnd = xml.indexOf('>', closingStart);
-            if (closingEnd < 0) {
-                return -1;
-            }
-
-            String closingContent = xml.substring(closingStart + 2, closingEnd).trim();
-            String localName = extractLocalName(closingContent);
-
-            if (elementName.equals(localName)) {
-                return closingStart;
-            }
-
-            pos = closingEnd + 1;
+            pos = gt + 1;
         }
-
         return -1;
     }
 
     /**
-     * Finds the position after the closing tag end for a given element.
+     * Finds the start ({@code </}) of the closing tag that matches the opening
+     * tag at {@code openingTagPos}, correctly handling nested same-local-name
+     * elements by tracking depth.
+     *
+     * @return position of the {@code </} of the matching closing tag, or -1
      */
-    private int findClosingTagEnd(String xml, int openingTagPos, String elementName) {
-        int contentStart = findElementContentStart(xml, openingTagPos, elementName);
-        if (contentStart < 0) {
-            return -1;
-        }
+    private int findClosingTagStart(String xml, int openingTagPos, String localName) {
+        int contentStart = findContentStart(xml, openingTagPos);
+        if (contentStart < 0) return -1;
 
-        // Need to handle nested same-name elements
         int depth = 1;
         int pos = contentStart;
 
         while (pos < xml.length() && depth > 0) {
-            int nextOpen = findOpeningTag(xml, pos, elementName);
-            int nextClose = xml.indexOf("</", pos);
+            // Find next opening or closing tag
+            int nextOpen  = xml.indexOf('<', pos);
+            if (nextOpen < 0) return -1;
 
-            if (nextClose < 0) {
-                return -1;
-            }
+            int nextChar = nextOpen + 1;
+            if (nextChar >= xml.length()) return -1;
 
-            // Check if we found the closing tag for our element
-            int closeEnd = xml.indexOf('>', nextClose);
-            if (closeEnd < 0) {
-                return -1;
-            }
+            int gt = xml.indexOf('>', nextOpen);
+            if (gt < 0) return -1;
 
-            String closingContent = xml.substring(nextClose + 2, closeEnd).trim();
-            String localName = extractLocalName(closingContent);
-
-            if (nextOpen >= 0 && nextOpen < nextClose) {
-                // Found nested opening tag first
-                depth++;
-                int nestedTagEnd = xml.indexOf('>', nextOpen);
-                pos = nestedTagEnd + 1;
-            } else if (elementName.equals(localName)) {
-                depth--;
-                if (depth == 0) {
-                    return nextClose;
+            if (xml.charAt(nextChar) == '/') {
+                // Closing tag
+                String closingName = xml.substring(nextChar + 1, gt).trim();
+                if (localName.equals(localName(closingName))) {
+                    depth--;
+                    if (depth == 0) return nextOpen;
                 }
-                pos = closeEnd + 1;
-            } else {
-                pos = closeEnd + 1;
+            } else if (xml.charAt(nextChar) != '?' && xml.charAt(nextChar) != '!') {
+                // Opening tag — check for same local name to track depth
+                String tagBody = xml.substring(nextChar, gt);
+                if (!tagBody.endsWith("/") && localName.equals(localName(tokenName(tagBody)))) {
+                    depth++;
+                }
             }
-        }
 
+            pos = gt + 1;
+        }
         return -1;
     }
 
     /**
-     * Extracts the local element name from tag content, stripping namespace prefix and attributes.
-     *
-     * Examples:
-     *   "ns:ElementName attr='val'" -> "ElementName"
-     *   "ElementName" -> "ElementName"
-     *   "ns:ElementName" -> "ElementName"
+     * Returns true if every path segment from {@code fromIndex} onward
+     * has an opening tag in {@code xml} (order not enforced — just existence).
+     * Sufficient for path-context filtering without full descent.
      */
-    private String extractLocalName(String tagContent) {
-        String name = tagContent.trim();
-
-        // Remove attributes (split at first space)
-        int spacePos = name.indexOf(' ');
-        if (spacePos > 0) {
-            name = name.substring(0, spacePos);
+    private boolean pathExistsIn(String xml, String[] segments, int fromIndex) {
+        for (int i = fromIndex; i < segments.length; i++) {
+            if (findOpeningTag(xml, 0, segments[i]) < 0) return false;
         }
+        return true;
+    }
 
-        // Remove namespace prefix
-        int colonPos = name.indexOf(':');
-        if (colonPos > 0) {
-            name = name.substring(colonPos + 1);
-        }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tag-name helpers
+    // ─────────────────────────────────────────────────────────────────────────
 
-        return name;
+    /**
+     * Extracts the element name token from a tag body, stripping attributes.
+     *
+     * {@code "ns3:DbtrAcct Ccy=\"SGD\""} → {@code "ns3:DbtrAcct"}
+     * {@code "DbtrAcct"}                 → {@code "DbtrAcct"}
+     */
+    private String tokenName(String tagBody) {
+        if (tagBody == null || tagBody.isEmpty()) return "";
+        int sp = tagBody.indexOf(' ');
+        return sp > 0 ? tagBody.substring(0, sp).trim() : tagBody.trim();
+    }
+
+    /**
+     * Strips the namespace prefix from a qualified name.
+     *
+     * {@code "ns3:DbtrAcct"} → {@code "DbtrAcct"}
+     * {@code "DbtrAcct"}     → {@code "DbtrAcct"}
+     * {@code "DbtrAcct/"}    → {@code "DbtrAcct"} (handles self-closing remnants)
+     */
+    private String localName(String qualifiedName) {
+        if (qualifiedName == null || qualifiedName.isEmpty()) return "";
+        String name = qualifiedName.trim();
+        // Remove trailing slash (self-closing tag remnant)
+        if (name.endsWith("/")) name = name.substring(0, name.length() - 1).trim();
+        int colon = name.indexOf(':');
+        return colon >= 0 ? name.substring(colon + 1) : name;
     }
 }

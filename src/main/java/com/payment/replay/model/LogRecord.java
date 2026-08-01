@@ -27,6 +27,7 @@ public final class LogRecord {
     private final String instructionId;
     private final String messageId;
     private final String xmlPayload;
+    private final LegType legType;
     private final String sourceFile;
     private final long lineNumber;
 
@@ -41,6 +42,7 @@ public final class LogRecord {
         this.instructionId = builder.instructionId;
         this.messageId = builder.messageId;
         this.xmlPayload = builder.xmlPayload;
+        this.legType = builder.legType != null ? builder.legType : LegType.from(builder.messageType);
         this.sourceFile = builder.sourceFile;
         this.lineNumber = builder.lineNumber;
     }
@@ -55,6 +57,7 @@ public final class LogRecord {
     public String getInstructionId() { return instructionId; }
     public String getMessageId() { return messageId; }
     public String getXmlPayload() { return xmlPayload; }
+    public LegType getLegType()   { return legType; }
     public String getSourceFile() { return sourceFile; }
     public long getLineNumber() { return lineNumber; }
 
@@ -110,6 +113,7 @@ public final class LogRecord {
         private String instructionId;
         private String messageId;
         private String xmlPayload;
+        private LegType legType;
         private String sourceFile;
         private long lineNumber;
 
@@ -125,6 +129,7 @@ public final class LogRecord {
         public Builder instructionId(String v) { this.instructionId = v; return this; }
         public Builder messageId(String v)     { this.messageId = v;     return this; }
         public Builder xmlPayload(String v)    { this.xmlPayload = v;    return this; }
+        public Builder legType(LegType v)      { this.legType = v;       return this; }
         public Builder sourceFile(String v)    { this.sourceFile = v;    return this; }
         public Builder lineNumber(long v)      { this.lineNumber = v;    return this; }
 

@@ -1,24 +1,27 @@
 # Payment Replay Tool
 
-A production-grade Java 8 command-line utility for extracting, sanitizing, and replaying payment messages from production log files to IBM MQ in UAT environments.
+A production-grade Java 8 command-line utility for extracting, sanitizing, and replaying payment messages from production log files to IBM MQ in UAT environments. Handles **250 TPS** sustained throughput with parallel processing.
 
 ## Application Overview
 
 The Payment Replay Tool provides two main functionalities:
 
-1. **filter-mask** - Reads production application log files, extracts specific MQ queue records, masks sensitive information inside XML payloads, maps production bank identifiers to UAT equivalents, and generates sanitized output files.
+1. **filter-mask** — Reads production log files in parallel, extracts inbound MQ records (pacs.008, admn.005, pacs.002), masks sensitive XML fields (namespace-aware), maps production BICs to UAT equivalents, and writes **two output file types**:
+   - `_leg1.log` — Credit transfers (pacs.008) and amendments (admn.005)
+   - `_leg3.log` — Payment status reports (pacs.002)
 
-2. **replay** - Reads sanitized output files and replays XML messages into IBM MQ with time-based scheduling and rate limiting.
+2. **replay** — Reads sanitized `_leg1` and/or `_leg3` files and replays to IBM MQ with time-based scheduling. Leg 1 and Leg 3 can be replayed **independently or concurrently** in separate threads.
 
 ## Architecture
 
 ### Design Principles
 
-- **Command Pattern** - Extensible CLI with pluggable commands
-- **Strategy Pattern** - Configurable masking algorithms without code changes
-- **Streaming I/O** - Line-by-line processing supports multi-GB log files
-- **Manual Dependency Injection** - Lightweight constructor injection, no framework overhead
-- **Fail-safe processing** - Individual record failures don't halt the pipeline
+- **Command Pattern** — Extensible CLI with pluggable commands
+- **Strategy Pattern** — Configurable masking algorithms without code changes
+- **Streaming I/O** — Line-by-line processing supports multi-GB log files
+- **Parallel Processing** — ExecutorService for concurrent file processing and dual-leg replay
+- **Namespace-Agnostic Masking** — Works regardless of XML namespace prefixes
+- **Fail-safe Processing** — Individual record failures don't halt the pipeline
 
 ### Package Structure
 

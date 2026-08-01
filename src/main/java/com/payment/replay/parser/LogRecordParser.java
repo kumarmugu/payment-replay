@@ -55,9 +55,9 @@ public final class LogRecordParser {
     /** Index of the XML payload field (everything from this index onward). */
     private static final int XML_FIELD_INDEX = 11;
 
-    /** Message type prefixes that qualify a record for processing. */
-    private static final Set<String> QUALIFYING_MSG_TYPES = new HashSet<>(Arrays.asList(
-            "pacs.008", "admn.005"
+    /** Message type prefixes that qualify a record for processing — ALL legs. */
+    private static final Set<String> ALL_MSG_TYPES = new HashSet<>(Arrays.asList(
+            "pacs.008", "admn.005", "pacs.002"
     ));
 
     private final AppConfig config;
@@ -173,7 +173,7 @@ public final class LogRecordParser {
             return null;
         }
 
-        // Filter 2: only qualifying message types (pacs.008, admn.005)
+        // Filter 2: only qualifying message types (pacs.008, admn.005, pacs.002)
         if (!isQualifyingMsgType(msgType)) {
             return null;
         }
@@ -199,14 +199,14 @@ public final class LogRecordParser {
 
     /**
      * Returns true if the message type qualifies for processing.
-     * Matches on prefix: "pacs.008" or "admn.005".
+     * Matches on prefix: "pacs.008", "admn.005", or "pacs.002".
      */
     boolean isQualifyingMsgType(String msgType) {
         if (msgType == null || msgType.isEmpty()) {
             return false;
         }
         String lower = msgType.toLowerCase();
-        for (String prefix : QUALIFYING_MSG_TYPES) {
+        for (String prefix : ALL_MSG_TYPES) {
             if (lower.startsWith(prefix)) {
                 return true;
             }

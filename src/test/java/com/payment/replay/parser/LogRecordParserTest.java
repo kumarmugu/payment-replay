@@ -138,12 +138,12 @@ public class LogRecordParserTest {
         assertThat(parser.isQualifyingMsgType("pacs.008.001.08")).isTrue();
         assertThat(parser.isQualifyingMsgType("pacs.008.001.02")).isTrue();
         assertThat(parser.isQualifyingMsgType("admn.005.001.01")).isTrue();
+        assertThat(parser.isQualifyingMsgType("pacs.002.001.10")).isTrue();
         assertThat(parser.isQualifyingMsgType("PACS.008.001.08")).isTrue(); // case-insensitive
     }
 
     @Test
     public void shouldRejectNonQualifyingMsgTypes() {
-        assertThat(parser.isQualifyingMsgType("pacs.002.001.10")).isFalse();
         assertThat(parser.isQualifyingMsgType("pacs.004.001.10")).isFalse();
         assertThat(parser.isQualifyingMsgType("camt.056.001.08")).isFalse();
         assertThat(parser.isQualifyingMsgType("")).isFalse();

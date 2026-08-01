@@ -1,14 +1,15 @@
 package com.payment.replay.command;
 
 import com.payment.replay.config.AppConfig;
+import com.payment.replay.config.FilterMaskConfig;
 import com.payment.replay.exception.BankMappingException;
-import com.payment.replay.exception.LogParsingException;
 import com.payment.replay.exception.MaskingException;
 import com.payment.replay.logging.ErrorReporter;
 import com.payment.replay.logging.MetricsCollector;
 import com.payment.replay.mapping.BankMappingService;
 import com.payment.replay.masking.MaskingService;
 import com.payment.replay.model.ErrorEntry;
+import com.payment.replay.model.LegType;
 import com.payment.replay.model.LogRecord;
 import com.payment.replay.model.MaskedRecord;
 import com.payment.replay.model.ProcessingMetrics;
@@ -24,23 +25,29 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Functionality 1: Log File Extraction and XML Data Masking
  *
- * Reads production log files, extracts matching queue records,
- * masks sensitive XML fields, maps production BICs to UAT equivalents,
- * and writes sanitized output files preserving the original directory structure.
+ * Processes production log files in PARALLEL (one thread per file), producing
+ * TWO output files per source file:
  *
- * Processing pipeline per record:
- * 1. Parse log line -> LogRecord
- * 2. Filter by queue pattern and bank list
- * 3. Mask sensitive XML fields
- * 4. Replace production BIC with UAT BIC in XML and queue name
- * 5. Write sanitized record to output file
+ *   - <filename>_leg1.log  →  pacs.008 + admn.005 (credit transfers & amendments)
+ *   - <filename>_leg3.log  →  pacs.002 (payment status reports)
+ *
+ * Pipeline per record:
+ *   Parse → Filter (direction=in, msgType, bankList) → Mask XML → Map BIC → Write
+ *
+ * Performance design for 250 TPS / full-day logs:
+ *   - Concurrent file processing (configurable thread count, default 4)
+ *   - Streaming I/O — never loads full files into memory
+ *   - Synchronised writer access per output file (ConcurrentHashMap of writers)
+ *   - MaskingService and BankMappingService are stateless and thread-safe
  */
 public final class FilterMaskCommand implements Command {
 
@@ -79,15 +86,16 @@ public final class FilterMaskCommand implements Command {
 
         String inputDirectory = args[0];
         ProcessingMetrics metrics = new ProcessingMetrics();
+        FilterMaskConfig fmConfig = config.getFilterMaskConfig();
 
         log.info("=== Filter-Mask Command Started ===");
         log.info("Input directory: {}", inputDirectory);
         log.info("Output directory: {}", config.getOutputDirectory());
+        log.info("Parallel threads: {}", fmConfig.getFileProcessingThreads());
+        log.info("Leg1 suffix: {}, Leg3 suffix: {}", fmConfig.getLeg1FileSuffix(), fmConfig.getLeg3FileSuffix());
 
         try {
-            // Step 1: Scan for log files
             List<Path> logFiles = fileScanner.scanLogFiles(inputDirectory);
-
             if (logFiles.isEmpty()) {
                 log.warn("No log files found in: {}", inputDirectory);
                 System.out.println("No log files found in: " + inputDirectory);
@@ -95,94 +103,87 @@ public final class FilterMaskCommand implements Command {
             }
 
             log.info("Found {} log files to process", logFiles.size());
-
-            // Step 2: Ensure output directories exist
             createOutputDirectories();
 
-            // Step 3: Process each file with output writers per switch folder
-            Map<String, BufferedWriter> writers = new HashMap<>();
+            // Thread-safe writer map: key = full output file path string
+            ConcurrentHashMap<String, BufferedWriter> writers = new ConcurrentHashMap<>();
 
-            try {
-                for (Path logFile : logFiles) {
-                    processFile(logFile, metrics, writers);
-                    metrics.incrementFilesProcessed();
-                }
-            } finally {
-                // Close all writers
-                for (BufferedWriter writer : writers.values()) {
-                    closeQuietly(writer);
-                }
+            // Process files in parallel
+            int threadCount = Math.min(fmConfig.getFileProcessingThreads(), logFiles.size());
+            ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+
+            for (Path logFile : logFiles) {
+                executor.submit(() -> {
+                    try {
+                        processFile(logFile, metrics, writers, fmConfig);
+                        metrics.incrementFilesProcessed();
+                    } catch (Exception e) {
+                        log.error("Unhandled error processing file {}: {}", logFile, e.getMessage(), e);
+                    }
+                });
             }
 
-            // Step 4: Finalize
+            executor.shutdown();
+            executor.awaitTermination(4, TimeUnit.HOURS); // Full day log = long runtime
+
+            // Close all writers
+            for (BufferedWriter w : writers.values()) {
+                closeQuietly(w);
+            }
+
             metrics.markComplete();
             metricsCollector.reportMetrics(metrics);
             errorReporter.flush();
 
             log.info("=== Filter-Mask Command Completed ===");
-            log.info("Duration: {}ms", metrics.getDurationMs());
-            log.info("Files processed: {}", metrics.getFilesProcessed());
-            log.info("Records scanned: {}", metrics.getRecordsScanned());
-            log.info("Records matched: {}", metrics.getRecordsMatched());
-            log.info("Records masked: {}", metrics.getRecordsMasked());
-            log.info("Records written: {}", metrics.getRecordsWritten());
-
             printSummary(metrics);
             return 0;
 
         } catch (Exception e) {
-            log.error("Fatal error during filter-mask processing: {}", e.getMessage(), e);
+            log.error("Fatal error during filter-mask: {}", e.getMessage(), e);
             System.err.println("Error: " + e.getMessage());
             return 2;
         }
     }
 
-    /**
-     * Processes a single log file, parsing records, masking, mapping, and writing output.
-     */
-    private void processFile(Path logFile, ProcessingMetrics metrics, Map<String, BufferedWriter> writers) {
+    private void processFile(Path logFile, ProcessingMetrics metrics,
+                             ConcurrentHashMap<String, BufferedWriter> writers,
+                             FilterMaskConfig fmConfig) {
         String switchFolder = fileScanner.extractSwitchFolder(logFile);
-        String fileName = logFile.getFileName().toString();
+        String baseFileName = logFile.getFileName().toString();
 
-        log.debug("Processing file: {} (switch: {})", fileName, switchFolder);
+        // Strip .log extension for suffix insertion
+        String stem = baseFileName.endsWith(".log")
+                ? baseFileName.substring(0, baseFileName.length() - 4) : baseFileName;
 
         long linesScanned = recordParser.parseFile(logFile,
-                // Success callback - record matched filters
                 record -> {
                     metrics.incrementRecordsMatched();
-                    processRecord(record, metrics, writers, switchFolder, fileName);
+                    processRecord(record, metrics, writers, switchFolder, stem, fmConfig);
                 },
-                // Error callback - record failed to parse
                 error -> {
                     metrics.incrementXmlFailures();
                     errorReporter.reportError(ErrorEntry.of(
                             "line-" + error.getLineNumber(),
                             ErrorEntry.ErrorType.LOG_PARSE_ERROR,
-                            error.getMessage(),
-                            error.getSourceFile(),
-                            error.getLineNumber()));
+                            error.getMessage(), error.getSourceFile(), error.getLineNumber()));
                 }
         );
 
-        metrics.getRecordsScanned();
-        // Add lines scanned (recordParser tracks individual line counts)
         for (long i = 0; i < linesScanned; i++) {
             metrics.incrementRecordsScanned();
         }
     }
 
-    /**
-     * Processes a single matched record through the masking and mapping pipeline.
-     */
     private void processRecord(LogRecord record, ProcessingMetrics metrics,
-                               Map<String, BufferedWriter> writers,
-                               String switchFolder, String fileName) {
+                               ConcurrentHashMap<String, BufferedWriter> writers,
+                               String switchFolder, String stem, FilterMaskConfig fmConfig) {
         try {
-            // Step 1: Mask sensitive XML fields
+            // 1. Mask sensitive XML fields
             String maskedXml = maskingService.maskXml(record.getXmlPayload());
             metrics.incrementRecordsMasked();
 
-            // Step 2: Replace production BIC with UAT BIC in XML
+            // 2. Map production BIC to UAT BIC
             String mappedXml;
             String mappedBic;
 
@@ -190,120 +191,82 @@ public final class FilterMaskCommand implements Command {
                 mappedXml = bankMappingService.replaceInXml(maskedXml, record.getBankBic());
                 mappedBic = bankMappingService.mapToUat(record.getBankBic());
             } else {
-                // No mapping available - use original values but log warning
-                log.warn("No bank mapping for BIC: {} in record at {}:{}",
+                log.warn("No bank mapping for BIC: {} at {}:{}",
                         record.getBankBic(), record.getSourceFile(), record.getLineNumber());
                 metrics.incrementBankMappingFailures();
-                errorReporter.reportError(ErrorEntry.of(
-                        record.getMessageId(),
+                errorReporter.reportError(ErrorEntry.of(record.getMessageId(),
                         ErrorEntry.ErrorType.BANK_MAPPING_ERROR,
                         "No UAT mapping for BIC: " + record.getBankBic(),
-                        record.getSourceFile(),
-                        record.getLineNumber()));
+                        record.getSourceFile(), record.getLineNumber()));
                 mappedXml = maskedXml;
                 mappedBic = record.getBankBic();
             }
 
-            // Step 3: Derive UAT queue name from mapped BIC + site number
-            // Pattern: <uatBic>_REQUEST.TO.G3_<siteNo>
-            String derivedQueueName = record.deriveQueueName(mappedBic);
-
-            // Step 4: Build masked record
+            // 3. Derive queue name and build masked record
+            String derivedQueue = record.deriveQueueName(mappedBic);
             MaskedRecord maskedRecord = MaskedRecord.fromLogRecord(record)
                     .maskedXmlPayload(mappedXml)
                     .mappedBankBic(mappedBic)
-                    .derivedQueueName(derivedQueueName)
+                    .derivedQueueName(derivedQueue)
                     .build();
 
-            // Step 4: Write to output file
-            writeRecord(maskedRecord, writers, switchFolder, fileName);
+            // 4. Determine leg suffix and write to appropriate file
+            LegType leg = record.getLegType();
+            String suffix = (leg == LegType.LEG3) ? fmConfig.getLeg3FileSuffix() : fmConfig.getLeg1FileSuffix();
+            String outputFileName = stem + suffix + ".log";
+            String writerKey = switchFolder + "/" + outputFileName;
+
+            writeRecord(maskedRecord, writers, writerKey, switchFolder, outputFileName);
             metrics.incrementRecordsWritten();
 
         } catch (MaskingException e) {
-            log.error("Masking failed for record at {}:{}: {}",
-                    record.getSourceFile(), record.getLineNumber(), e.getMessage());
             metrics.incrementXmlFailures();
-            errorReporter.reportError(ErrorEntry.of(
-                    record.getMessageId(),
-                    ErrorEntry.ErrorType.MASKING_ERROR,
-                    e.getMessage(),
-                    record.getSourceFile(),
-                    record.getLineNumber()));
-
+            errorReporter.reportError(ErrorEntry.of(record.getMessageId(),
+                    ErrorEntry.ErrorType.MASKING_ERROR, e.getMessage(),
+                    record.getSourceFile(), record.getLineNumber()));
         } catch (BankMappingException e) {
-            log.error("Bank mapping failed for BIC '{}' at {}:{}: {}",
-                    e.getProductionBic(), record.getSourceFile(), record.getLineNumber(), e.getMessage());
             metrics.incrementBankMappingFailures();
-            errorReporter.reportError(ErrorEntry.of(
-                    record.getMessageId(),
-                    ErrorEntry.ErrorType.BANK_MAPPING_ERROR,
-                    e.getMessage(),
-                    record.getSourceFile(),
-                    record.getLineNumber()));
-
+            errorReporter.reportError(ErrorEntry.of(record.getMessageId(),
+                    ErrorEntry.ErrorType.BANK_MAPPING_ERROR, e.getMessage(),
+                    record.getSourceFile(), record.getLineNumber()));
         } catch (Exception e) {
-            log.error("Unexpected error processing record at {}:{}: {}",
-                    record.getSourceFile(), record.getLineNumber(), e.getMessage());
-            errorReporter.reportError(ErrorEntry.of(
-                    record.getMessageId(),
-                    ErrorEntry.ErrorType.UNKNOWN_ERROR,
-                    e.getMessage(),
-                    record.getSourceFile(),
-                    record.getLineNumber()));
+            errorReporter.reportError(ErrorEntry.of(record.getMessageId(),
+                    ErrorEntry.ErrorType.UNKNOWN_ERROR, e.getMessage(),
+                    record.getSourceFile(), record.getLineNumber()));
         }
     }
 
-    /**
-     * Writes a masked record to the appropriate output file.
-     * Output preserves the same file name in the same switch subfolder structure.
-     */
-    private void writeRecord(MaskedRecord record, Map<String, BufferedWriter> writers,
-                             String switchFolder, String fileName) {
-        String writerKey = switchFolder + "/" + fileName;
-
+    private void writeRecord(MaskedRecord record, ConcurrentHashMap<String, BufferedWriter> writers,
+                             String writerKey, String switchFolder, String outputFileName) {
         try {
-            BufferedWriter writer = writers.computeIfAbsent(writerKey, key -> {
-                Path outputFile = Paths.get(config.getOutputDirectory(), switchFolder, fileName);
+            BufferedWriter writer = writers.computeIfAbsent(writerKey, k -> {
+                Path outputFile = Paths.get(config.getOutputDirectory(), switchFolder, outputFileName);
                 try {
                     Files.createDirectories(outputFile.getParent());
                     return Files.newBufferedWriter(outputFile, StandardCharsets.UTF_8,
                             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 } catch (IOException e) {
-                    log.error("Failed to open output file: {}", outputFile, e);
                     throw new RuntimeException("Cannot open output file: " + outputFile, e);
                 }
             });
 
-            writer.write(record.toLogLine());
-            writer.newLine();
-
+            // Synchronise writes to the same file from concurrent threads
+            synchronized (writer) {
+                writer.write(record.toLogLine());
+                writer.newLine();
+            }
         } catch (IOException e) {
-            log.error("Failed to write record to output file: {}/{}", switchFolder, fileName);
-            errorReporter.reportError(ErrorEntry.of(
-                    record.getMessageId(),
-                    ErrorEntry.ErrorType.FILE_IO_ERROR,
-                    "Failed to write output: " + e.getMessage(),
-                    record.getSourceFile(),
-                    record.getLineNumber()));
+            log.error("Write failure for {}/{}: {}", switchFolder, outputFileName, e.getMessage());
         }
     }
 
-    /**
-     * Creates the output directory structure (sw1, sw2, sw3, sw4 subfolders).
-     */
     private void createOutputDirectories() throws IOException {
         String outputDir = config.getOutputDirectory();
-        String[] switchFolders = {"sw1", "sw2", "sw3", "sw4"};
-        for (String folder : switchFolders) {
-            Path dir = Paths.get(outputDir, folder);
-            Files.createDirectories(dir);
+        for (String folder : new String[]{"sw1", "sw2", "sw3", "sw4"}) {
+            Files.createDirectories(Paths.get(outputDir, folder));
         }
-        log.debug("Output directories created under: {}", outputDir);
     }
 
-    /**
-     * Prints a summary to stdout for user visibility.
-     */
     private void printSummary(ProcessingMetrics metrics) {
         System.out.println();
         System.out.println("=== Processing Summary ===");
@@ -319,41 +282,16 @@ public final class FilterMaskCommand implements Command {
         System.out.println();
     }
 
-    private void closeQuietly(BufferedWriter writer) {
-        if (writer != null) {
-            try {
-                writer.flush();
-                writer.close();
-            } catch (IOException e) {
-                log.warn("Error closing output writer: {}", e.getMessage());
-            }
-        }
+    private void closeQuietly(BufferedWriter w) {
+        try { w.flush(); w.close(); } catch (IOException e) { /* ignore */ }
     }
 
-    @Override
-    public String getName() {
-        return "filter-mask";
-    }
-
-    @Override
-    public String getDescription() {
-        return "Extract, mask, and sanitize production log files for UAT replay";
-    }
-
-    @Override
-    public String getUsage() {
-        return "Usage: java -jar payment-replay-tool.jar filter-mask <logpath>\n" +
-                "\n" +
-                "Arguments:\n" +
-                "  <logpath>    Input directory containing log files (with sw1-sw4 subfolders)\n" +
-                "\n" +
-                "Description:\n" +
-                "  Reads production log files, extracts matching queue records,\n" +
-                "  masks sensitive XML fields, maps production BICs to UAT equivalents,\n" +
-                "  and generates sanitized output files.\n" +
-                "\n" +
-                "Examples:\n" +
-                "  java -jar payment-replay-tool.jar filter-mask /data/logs/20260728\n" +
-                "  java -jar payment-replay-tool.jar filter-mask ./input";
+    @Override public String getName()        { return "filter-mask"; }
+    @Override public String getDescription() { return "Extract, mask, and sanitize production log files (outputs _leg1 and _leg3 files)"; }
+    @Override public String getUsage() {
+        return "Usage: java -jar payment-replay-tool.jar filter-mask <logpath>\n\n"
+                + "Produces two output files per input:\n"
+                + "  <filename>_leg1.log  — pacs.008 + admn.005 records\n"
+                + "  <filename>_leg3.log  — pacs.002 records\n";
     }
 }

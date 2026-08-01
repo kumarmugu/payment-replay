@@ -2,25 +2,54 @@ application:
   name: payment-replay-tool
   version: 1.0.0
 
-# Output directory for sanitized files
+# ─────────────────────────────────────────────────────────────────────────────
+# OUTPUT DIRECTORY FOR SANITIZED FILES
+# ─────────────────────────────────────────────────────────────────────────────
 output:
   directory: ./output
 
-# Replay configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# FILTER-MASK SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+filterMask:
+  # Suffix appended to output filenames for Leg 1 (pacs.008 + admn.005)
+  leg1FileSuffix: "_leg1"
+  # Suffix appended to output filenames for Leg 3 (pacs.002)
+  leg3FileSuffix: "_leg3"
+
+  # Number of files processed concurrently.
+  # Rule of thumb: set to number of switch folders (4) or IO-bound core count.
+  # At 250 TPS with 4 switch folders 4 threads is optimal.
+  fileProcessingThreads: 4
+
+  # Size of the bounded queue feeding writer threads.
+  # Larger = more memory but smoother throughput under burst load.
+  writerQueueSize: 2000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REPLAY SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
 replay:
-  # Grouping interval in seconds (60 = one minute batches)
-  groupingIntervalSeconds: 10
-  # Maximum messages per second
+  # Time-window grouping interval in seconds.
+  # 60 = one-minute batches; use smaller values for sub-minute timing fidelity.
+  groupingIntervalSeconds: 60
+
+  # Maximum messages sent to MQ per second (across all legs combined).
+  # 250 matches expected production peak TPS.
   maxMessagesPerSecond: 250
-  # Input directory for sanitized files to replay
+
+  # Directory containing sanitized files to replay (output of filter-mask).
   inputDirectory: ./output
 
-# Queue name pattern for filtering
-queue:
-  # Pattern: <BANK>_REQUEST.TO.G3_<G3_SITE_NO>
-  filterPattern: "{bank}_REQUEST.TO.G3_{siteNo}"
+  # Which legs to replay:
+  #   leg1  — replay only Leg 1 files (_leg1)
+  #   leg3  — replay only Leg 3 files (_leg3)
+  #   both  — replay Leg 1 and Leg 3 concurrently in separate threads
+  replayLegs: both
 
-# IBM MQ Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# IBM MQ CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
 mq:
   site1:
     queueManager: QM_SITE1
@@ -45,12 +74,13 @@ mq:
     username: ""
     password: ""
 
-# Metrics and reporting
+# ─────────────────────────────────────────────────────────────────────────────
+# METRICS AND REPORTING
+# ─────────────────────────────────────────────────────────────────────────────
 metrics:
   enabled: true
   reportIntervalSeconds: 60
 
-# Error reporting
 errorReport:
   outputDirectory: ./reports
   filenamePattern: "error-report-{date}.csv"

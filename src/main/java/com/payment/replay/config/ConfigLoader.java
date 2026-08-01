@@ -184,7 +184,17 @@ public final class ConfigLoader {
         ReplayConfig replayConfig = new ReplayConfig(
                 getInt(replaySection, "groupingIntervalSeconds", 60),
                 getInt(replaySection, "maxMessagesPerSecond", 250),
-                getString(replaySection, "inputDirectory", "./output")
+                getString(replaySection, "inputDirectory", "./output"),
+                ReplayConfig.ReplayLegs.from(getString(replaySection, "replayLegs", "both"))
+        );
+
+        // Filter-mask configuration
+        Map<String, Object> fmSection = getSection(appYaml, "filterMask");
+        FilterMaskConfig filterMaskConfig = new FilterMaskConfig(
+                getString(fmSection, "leg1FileSuffix", "_leg1"),
+                getString(fmSection, "leg3FileSuffix", "_leg3"),
+                getInt(fmSection, "fileProcessingThreads", 4),
+                getInt(fmSection, "writerQueueSize", 2000)
         );
 
         // MQ configuration
@@ -205,6 +215,7 @@ public final class ConfigLoader {
         return AppConfig.builder()
                 .outputDirectory(outputDirectory)
                 .replayConfig(replayConfig)
+                .filterMaskConfig(filterMaskConfig)
                 .mqSite1Config(site1Config)
                 .mqSite2Config(site2Config)
                 .maskFields(maskFields)

@@ -15,6 +15,7 @@ public final class AppConfig {
 
     private final String outputDirectory;
     private final ReplayConfig replayConfig;
+    private final FilterMaskConfig filterMaskConfig;
     private final MqSiteConfig mqSite1Config;
     private final MqSiteConfig mqSite2Config;
     private final List<MaskFieldConfig> maskFields;
@@ -30,6 +31,9 @@ public final class AppConfig {
     private AppConfig(Builder builder) {
         this.outputDirectory = builder.outputDirectory;
         this.replayConfig = builder.replayConfig;
+        this.filterMaskConfig = builder.filterMaskConfig != null
+                ? builder.filterMaskConfig
+                : new FilterMaskConfig("_leg1", "_leg3", 4, 2000);
         this.mqSite1Config = builder.mqSite1Config;
         this.mqSite2Config = builder.mqSite2Config;
         this.maskFields = Collections.unmodifiableList(builder.maskFields);
@@ -60,6 +64,10 @@ public final class AppConfig {
 
     public ReplayConfig getReplayConfig() {
         return replayConfig;
+    }
+
+    public FilterMaskConfig getFilterMaskConfig() {
+        return filterMaskConfig;
     }
 
     public MqSiteConfig getMqSite1Config() {
@@ -143,6 +151,7 @@ public final class AppConfig {
     public static final class Builder {
         private String outputDirectory = "./output";
         private ReplayConfig replayConfig;
+        private FilterMaskConfig filterMaskConfig;
         private MqSiteConfig mqSite1Config;
         private MqSiteConfig mqSite2Config;
         private List<MaskFieldConfig> maskFields = Collections.emptyList();
@@ -163,6 +172,11 @@ public final class AppConfig {
 
         public Builder replayConfig(ReplayConfig replayConfig) {
             this.replayConfig = replayConfig;
+            return this;
+        }
+
+        public Builder filterMaskConfig(FilterMaskConfig filterMaskConfig) {
+            this.filterMaskConfig = filterMaskConfig;
             return this;
         }
 
