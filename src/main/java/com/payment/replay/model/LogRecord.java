@@ -71,17 +71,20 @@ public final class LogRecord {
 
     /**
      * Derives the destination MQ queue name from the bank BIC and site number.
-     * Pattern: <bankBic>_REQUEST.TO.G3_<siteNo>
+     * Leg1 pattern: <bankBic>_REQUEST.TO.G3_<siteNo>
+     * Leg3 pattern: <bankBic>_RESPONSE.TO.G3_<siteNo>
      */
     public String deriveQueueName() {
-        return bankBic + "_REQUEST.TO.G3_" + extractSiteNumber();
+        String middle = (legType == LegType.LEG3) ? "_RESPONSE.TO.G3_" : "_REQUEST.TO.G3_";
+        return bankBic + middle + extractSiteNumber();
     }
 
     /**
      * Derives the destination MQ queue name using the given (mapped) BIC.
      */
     public String deriveQueueName(String bic) {
-        return bic + "_REQUEST.TO.G3_" + extractSiteNumber();
+        String middle = (legType == LegType.LEG3) ? "_RESPONSE.TO.G3_" : "_REQUEST.TO.G3_";
+        return bic + middle + extractSiteNumber();
     }
 
     @Override
