@@ -77,22 +77,31 @@ public final class SettlementCycleFilter {
         return allowedInstructionIds.size();
     }
 
+    /** Position of BIC start within instruction ID (0-indexed). Format: <8-char date><BIC><suffix> */
+    private static final int BIC_START_INDEX = 8;
+
     /**
-     * Extracts the sender BIC embedded within an instruction ID by matching
-     * against the known BIC-to-UAT mapping keys.
+     * Extracts the sender BIC from an instruction ID.
      *
-     * Example: "20260805DBSSSGSGBRT7842306" contains "DBSSSGSG"
+     * Format: <YYYYMMDD><BIC><suffix>
+     * Example: 20260805DBSSSGSGBRT7842306 → DBSSSGSG (8 chars)
+     *          20260805UABORSGSGNRT00001 → UABORSGSG (9 chars)
      *
-     * @param instructionId the full instruction ID
-     * @param bicMapping    map of production BICs to check against
-     * @return the embedded BIC, or null if none found
+     * Since BIC length can vary (8 or 9 chars), we match against known BICs
+     * starting at position 8.
+     *
+     * @param instructionId the full instruction ID (fixed format)
+     * @param bicMapping    known BIC-to-UAT mapping for matching
+     * @return the BIC found at position 8, or null if none matches
      */
     public static String extractBicFromInstructionId(String instructionId, Map<String, String> bicMapping) {
-        if (instructionId == null || instructionId.isEmpty() || bicMapping == null) {
+        if (instructionId == null || instructionId.length() <= BIC_START_INDEX || bicMapping == null) {
             return null;
         }
+        String afterDate = instructionId.substring(BIC_START_INDEX);
+        // Try each known BIC; check if the portion after the date starts with it
         for (String bic : bicMapping.keySet()) {
-            if (instructionId.contains(bic)) {
+            if (afterDate.startsWith(bic)) {
                 return bic;
             }
         }
@@ -100,18 +109,28 @@ public final class SettlementCycleFilter {
     }
 
     /**
-     * Replaces the embedded production BIC in an instruction ID with the UAT BIC.
+     * Replaces the BIC in an instruction ID with the UAT BIC.
+     * BIC starts at position 8 after the 8-char date prefix.
      *
      * @param instructionId original instruction ID
-     * @param productionBic production BIC found within
+     * @param productionBic production BIC at position 8 (variable length 8-9 chars)
      * @param uatBic        UAT replacement BIC
-     * @return instruction ID with BIC replaced
+     * @return instruction ID with BIC replaced positionally
      */
     public static String replaceBicInInstructionId(String instructionId, String productionBic, String uatBic) {
         if (instructionId == null || productionBic == null || uatBic == null) {
             return instructionId;
         }
-        return instructionId.replace(productionBic, uatBic);
+        if (instructionId.length() <= BIC_START_INDEX) {
+            return instructionId;
+        }
+        String date = instructionId.substring(0, BIC_START_INDEX);
+        String afterDate = instructionId.substring(BIC_START_INDEX);
+        if (afterDate.startsWith(productionBic)) {
+            String suffix = afterDate.substring(productionBic.length());
+            return date + uatBic + suffix;
+        }
+        return instructionId;
     }
 
     /**

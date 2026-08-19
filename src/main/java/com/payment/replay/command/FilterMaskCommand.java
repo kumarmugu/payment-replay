@@ -199,8 +199,9 @@ public final class FilterMaskCommand implements Command {
             if (bankMappingService.hasMappingFor(record.getBankBic())) {
                 mappedBic = bankMappingService.mapToUat(record.getBankBic());
                 mappedXml = bankMappingService.replaceInXml(maskedXml, record.getBankBic());
-                // Replace BIC embedded within instruction ID and message ID
-                mappedInstrId = mappedInstrId.replace(record.getBankBic(), mappedBic);
+                // Replace BIC at position 8 in instruction ID (fixed format: date+BIC+suffix)
+                mappedInstrId = SettlementCycleFilter.replaceBicInInstructionId(
+                        mappedInstrId, record.getBankBic(), mappedBic);
                 mappedMsgId = mappedMsgId.replace(record.getBankBic(), mappedBic);
             } else {
                 log.warn("No bank mapping for BIC: {} at {}:{}",
