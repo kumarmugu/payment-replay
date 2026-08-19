@@ -6,6 +6,7 @@ import com.payment.replay.exception.BankMappingException;
 import com.payment.replay.exception.MaskingException;
 import com.payment.replay.logging.ErrorReporter;
 import com.payment.replay.logging.MetricsCollector;
+import com.payment.replay.logging.ReconReport;
 import com.payment.replay.mapping.BankMappingService;
 import com.payment.replay.masking.MaskingService;
 import com.payment.replay.model.ErrorEntry;
@@ -99,6 +100,10 @@ public final class FilterMaskCommand implements Command {
             // Load settlement cycle filter from input directory
             SettlementCycleFilter settlementFilter = new SettlementCycleFilter(inputDirectory);
 
+            // Reconciliation report
+            ReconReport reconReport = new ReconReport(
+                    config.getErrorReportDirectory(), config.getAllowedBics());
+
             List<Path> logFiles = fileScanner.scanLogFiles(inputDirectory);
             if (logFiles.isEmpty()) {
                 log.warn("No log files found in: {}", inputDirectory);
@@ -119,7 +124,7 @@ public final class FilterMaskCommand implements Command {
             for (Path logFile : logFiles) {
                 executor.submit(() -> {
                     try {
-                        processFile(logFile, metrics, writers, fmConfig, settlementFilter);
+                        processFile(logFile, metrics, writers, fmConfig, settlementFilter, reconReport);
                         metrics.incrementFilesProcessed();
                     } catch (Exception e) {
                         log.error("Unhandled error processing file {}: {}", logFile, e.getMessage(), e);
@@ -141,6 +146,7 @@ public final class FilterMaskCommand implements Command {
 
             log.info("=== Filter-Mask Command Completed ===");
             printSummary(metrics);
+            reconReport.generate();
             return 0;
 
         } catch (Exception e) {
@@ -152,21 +158,27 @@ public final class FilterMaskCommand implements Command {
 
     private void processFile(Path logFile, ProcessingMetrics metrics,
                              ConcurrentHashMap<String, BufferedWriter> writers,
-                             FilterMaskConfig fmConfig, SettlementCycleFilter settlementFilter) {
+                             FilterMaskConfig fmConfig, SettlementCycleFilter settlementFilter,
+                             ReconReport reconReport) {
         String switchFolder = fileScanner.extractSwitchFolder(logFile);
         String baseFileName = logFile.getFileName().toString();
 
         String stem = baseFileName.endsWith(".log")
                 ? baseFileName.substring(0, baseFileName.length() - 4) : baseFileName;
 
+        reconReport.recordFileProcessed(switchFolder);
+
         long linesScanned = recordParser.parseFile(logFile,
                 record -> {
-                    // Settlement cycle filter: only include records in the instruction list
+                    // Track all inbound records for recon (before settlement filter)
+                    reconReport.recordInputRecord(switchFolder, record.getMessageType());
+
+                    // Settlement cycle filter
                     if (!settlementFilter.isAllowed(record.getInstructionId())) {
-                        return; // skip — not in settlement cycle
+                        return;
                     }
                     metrics.incrementRecordsMatched();
-                    processRecord(record, metrics, writers, switchFolder, stem, fmConfig);
+                    processRecord(record, metrics, writers, switchFolder, stem, fmConfig, reconReport);
                 },
                 error -> {
                     metrics.incrementXmlFailures();
@@ -174,7 +186,9 @@ public final class FilterMaskCommand implements Command {
                             "line-" + error.getLineNumber(),
                             ErrorEntry.ErrorType.LOG_PARSE_ERROR,
                             error.getMessage(), error.getSourceFile(), error.getLineNumber()));
-                }
+                },
+                // Skipped BIC callback — captures banks not in bank-list
+                reconReport::recordMissingBank
         );
 
         for (long i = 0; i < linesScanned; i++) {
@@ -184,7 +198,8 @@ public final class FilterMaskCommand implements Command {
 
     private void processRecord(LogRecord record, ProcessingMetrics metrics,
                                ConcurrentHashMap<String, BufferedWriter> writers,
-                               String switchFolder, String stem, FilterMaskConfig fmConfig) {
+                               String switchFolder, String stem, FilterMaskConfig fmConfig,
+                               ReconReport reconReport) {
         try {
             // 1. Mask sensitive XML fields
             String maskedXml = maskingService.maskXml(record.getXmlPayload());
@@ -244,6 +259,7 @@ public final class FilterMaskCommand implements Command {
 
             writeRecord(maskedRecord, writers, writerKey, switchFolder, outputFileName);
             metrics.incrementRecordsWritten();
+            reconReport.recordOutputRecord(switchFolder, record.getMessageType());
 
         } catch (MaskingException e) {
             metrics.incrementXmlFailures();

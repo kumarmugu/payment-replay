@@ -69,12 +69,15 @@ public final class LogRecordParser {
     /**
      * Streams and parses a log file, invoking the consumer for each matching record.
      *
-     * @param filePath  path to the log file
-     * @param consumer  callback for each valid, filtered LogRecord
-     * @param onError   callback for records that fail parsing (null = silently skip)
+     * @param filePath       path to the log file
+     * @param consumer       callback for each valid, filtered LogRecord
+     * @param onError        callback for records that fail parsing (null = silently skip)
+     * @param onSkippedBic   callback when a record is skipped due to BIC not in bank list (null = ignore)
      * @return total number of lines scanned (including blank and non-matching lines)
      */
-    public long parseFile(Path filePath, Consumer<LogRecord> consumer, Consumer<LogParsingException> onError) {
+    public long parseFile(Path filePath, Consumer<LogRecord> consumer,
+                          Consumer<LogParsingException> onError,
+                          Consumer<String> onSkippedBic) {
         String sourceFile = filePath.toString();
         long lineNumber = 0;
         Set<String> allowedBics = config.getAllowedBics();
@@ -94,11 +97,14 @@ public final class LogRecordParser {
                     LogRecord record = parseLine(line, sourceFile, lineNumber);
 
                     if (record == null) {
-                        continue; // not an MQ line or not qualifying msg type
+                        continue;
                     }
 
                     // Filter: bank BIC must be in the configured allowed list
                     if (!allowedBics.contains(record.getBankBic())) {
+                        if (onSkippedBic != null) {
+                            onSkippedBic.accept(record.getBankBic());
+                        }
                         continue;
                     }
 
@@ -118,6 +124,13 @@ public final class LogRecordParser {
 
         log.debug("Finished parsing {}. Lines scanned: {}", sourceFile, lineNumber);
         return lineNumber;
+    }
+
+    /**
+     * Backwards-compatible overload without skipped-BIC callback.
+     */
+    public long parseFile(Path filePath, Consumer<LogRecord> consumer, Consumer<LogParsingException> onError) {
+        return parseFile(filePath, consumer, onError, null);
     }
 
     /**
