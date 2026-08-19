@@ -73,11 +73,13 @@ public final class LogRecordParser {
      * @param consumer       callback for each valid, filtered LogRecord
      * @param onError        callback for records that fail parsing (null = silently skip)
      * @param onSkippedBic   callback when a record is skipped due to BIC not in bank list (null = ignore)
+     * @param onInboundRecord callback for EVERY inbound qualifying record BEFORE bank-list filtering (for recon counts)
      * @return total number of lines scanned (including blank and non-matching lines)
      */
     public long parseFile(Path filePath, Consumer<LogRecord> consumer,
                           Consumer<LogParsingException> onError,
-                          Consumer<String> onSkippedBic) {
+                          Consumer<String> onSkippedBic,
+                          Consumer<LogRecord> onInboundRecord) {
         String sourceFile = filePath.toString();
         long lineNumber = 0;
         Set<String> allowedBics = config.getAllowedBics();
@@ -98,6 +100,11 @@ public final class LogRecordParser {
 
                     if (record == null) {
                         continue;
+                    }
+
+                    // Notify recon: every inbound qualifying record (before bank filtering)
+                    if (onInboundRecord != null) {
+                        onInboundRecord.accept(record);
                     }
 
                     // Filter: bank BIC must be in the configured allowed list
@@ -127,10 +134,10 @@ public final class LogRecordParser {
     }
 
     /**
-     * Backwards-compatible overload without skipped-BIC callback.
+     * Backwards-compatible overload without skipped-BIC or inbound callbacks.
      */
     public long parseFile(Path filePath, Consumer<LogRecord> consumer, Consumer<LogParsingException> onError) {
-        return parseFile(filePath, consumer, onError, null);
+        return parseFile(filePath, consumer, onError, null, null);
     }
 
     /**

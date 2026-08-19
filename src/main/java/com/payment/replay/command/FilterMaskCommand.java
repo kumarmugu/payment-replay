@@ -170,9 +170,6 @@ public final class FilterMaskCommand implements Command {
 
         long linesScanned = recordParser.parseFile(logFile,
                 record -> {
-                    // Track all inbound records for recon (before settlement filter)
-                    reconReport.recordInputRecord(switchFolder, record.getMessageType());
-
                     // Settlement cycle filter
                     if (!settlementFilter.isAllowed(record.getInstructionId())) {
                         return;
@@ -188,7 +185,9 @@ public final class FilterMaskCommand implements Command {
                             error.getMessage(), error.getSourceFile(), error.getLineNumber()));
                 },
                 // Skipped BIC callback — captures banks not in bank-list
-                reconReport::recordMissingBank
+                reconReport::recordMissingBank,
+                // Inbound record callback — fires BEFORE bank-list filter for accurate recon counts
+                record -> reconReport.recordInputRecord(switchFolder, record.getMessageType())
         );
 
         for (long i = 0; i < linesScanned; i++) {
