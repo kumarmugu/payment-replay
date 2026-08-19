@@ -1,0 +1,12 @@
+# Settlement Cycle Instruction IDs
+# One instruction ID per line. Only records matching these IDs will be processed.
+# Lines starting with # are comments and ignored.
+
+20260728DBSSSGSG0001
+20260728DBSSSGSG0002
+20260728OCBC0001
+20260728UABOR0001
+20260728UABOR0002
+20260728HABOR0001
+20260728HABOR0002
+20260728ZYBN0001

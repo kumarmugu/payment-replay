@@ -3,22 +3,8 @@
 # Records from banks NOT in this list are silently ignored.
 
 banks:
-  - bic: DBSSSGSG
-    name: DBS Bank
-    country: SG
-
-  - bic: OCBCSGSG
-    name: OCBC Bank
-    country: SG
-
-  - bic: UABORSGSG
-    name: United Overseas Bank
-    country: SG
-
-  - bic: HABORSGSG
-    name: HSBC Bank Singapore
-    country: SG
-
-  - bic: ZYBNSGSG
-    name: Maybank Singapore
-    country: SG
+  - DBSSSGSG
+  - OCBCSGSG
+  - UABORSGSG
+  - HABORSGSG
+  - ZYBNSGSG

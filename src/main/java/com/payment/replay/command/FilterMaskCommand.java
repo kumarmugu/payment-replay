@@ -15,6 +15,7 @@ import com.payment.replay.model.MaskedRecord;
 import com.payment.replay.model.ProcessingMetrics;
 import com.payment.replay.parser.LogFileScanner;
 import com.payment.replay.parser.LogRecordParser;
+import com.payment.replay.parser.SettlementCycleFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -95,6 +96,9 @@ public final class FilterMaskCommand implements Command {
         log.info("Leg1 suffix: {}, Leg3 suffix: {}", fmConfig.getLeg1FileSuffix(), fmConfig.getLeg3FileSuffix());
 
         try {
+            // Load settlement cycle filter from input directory
+            SettlementCycleFilter settlementFilter = new SettlementCycleFilter(inputDirectory);
+
             List<Path> logFiles = fileScanner.scanLogFiles(inputDirectory);
             if (logFiles.isEmpty()) {
                 log.warn("No log files found in: {}", inputDirectory);
@@ -115,7 +119,7 @@ public final class FilterMaskCommand implements Command {
             for (Path logFile : logFiles) {
                 executor.submit(() -> {
                     try {
-                        processFile(logFile, metrics, writers, fmConfig);
+                        processFile(logFile, metrics, writers, fmConfig, settlementFilter);
                         metrics.incrementFilesProcessed();
                     } catch (Exception e) {
                         log.error("Unhandled error processing file {}: {}", logFile, e.getMessage(), e);
@@ -148,16 +152,19 @@ public final class FilterMaskCommand implements Command {
 
     private void processFile(Path logFile, ProcessingMetrics metrics,
                              ConcurrentHashMap<String, BufferedWriter> writers,
-                             FilterMaskConfig fmConfig) {
+                             FilterMaskConfig fmConfig, SettlementCycleFilter settlementFilter) {
         String switchFolder = fileScanner.extractSwitchFolder(logFile);
         String baseFileName = logFile.getFileName().toString();
 
-        // Strip .log extension for suffix insertion
         String stem = baseFileName.endsWith(".log")
                 ? baseFileName.substring(0, baseFileName.length() - 4) : baseFileName;
 
         long linesScanned = recordParser.parseFile(logFile,
                 record -> {
+                    // Settlement cycle filter: only include records in the instruction list
+                    if (!settlementFilter.isAllowed(record.getInstructionId())) {
+                        return; // skip — not in settlement cycle
+                    }
                     metrics.incrementRecordsMatched();
                     processRecord(record, metrics, writers, switchFolder, stem, fmConfig);
                 },
@@ -186,10 +193,15 @@ public final class FilterMaskCommand implements Command {
             // 2. Map production BIC to UAT BIC
             String mappedXml;
             String mappedBic;
+            String mappedInstrId = record.getInstructionId();
+            String mappedMsgId = record.getMessageId();
 
             if (bankMappingService.hasMappingFor(record.getBankBic())) {
-                mappedXml = bankMappingService.replaceInXml(maskedXml, record.getBankBic());
                 mappedBic = bankMappingService.mapToUat(record.getBankBic());
+                mappedXml = bankMappingService.replaceInXml(maskedXml, record.getBankBic());
+                // Replace BIC embedded within instruction ID and message ID
+                mappedInstrId = mappedInstrId.replace(record.getBankBic(), mappedBic);
+                mappedMsgId = mappedMsgId.replace(record.getBankBic(), mappedBic);
             } else {
                 log.warn("No bank mapping for BIC: {} at {}:{}",
                         record.getBankBic(), record.getSourceFile(), record.getLineNumber());
@@ -202,11 +214,24 @@ public final class FilterMaskCommand implements Command {
                 mappedBic = record.getBankBic();
             }
 
+            // Also replace any OTHER known production BICs that appear in instrId/msgId/XML
+            for (java.util.Map.Entry<String, String> entry : config.getBicToUatMapping().entrySet()) {
+                String prodBic = entry.getKey();
+                String uatBic = entry.getValue();
+                if (!prodBic.equals(record.getBankBic())) {
+                    mappedXml = mappedXml.replace(prodBic, uatBic);
+                    mappedInstrId = mappedInstrId.replace(prodBic, uatBic);
+                    mappedMsgId = mappedMsgId.replace(prodBic, uatBic);
+                }
+            }
+
             // 3. Derive queue name and build masked record
             String derivedQueue = record.deriveQueueName(mappedBic);
             MaskedRecord maskedRecord = MaskedRecord.fromLogRecord(record)
                     .maskedXmlPayload(mappedXml)
                     .mappedBankBic(mappedBic)
+                    .instructionId(mappedInstrId)
+                    .messageId(mappedMsgId)
                     .derivedQueueName(derivedQueue)
                     .build();
 

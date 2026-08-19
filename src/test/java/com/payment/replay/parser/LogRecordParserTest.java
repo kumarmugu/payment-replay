@@ -55,9 +55,9 @@ public class LogRecordParserTest {
     @Before
     public void setUp() {
         List<BankListConfig> bankList = Arrays.asList(
-                new BankListConfig("DBSSSGSG", "DBS Bank", "SG"),
-                new BankListConfig("OCBCSGSG", "OCBC Bank", "SG"),
-                new BankListConfig("ZYBNSGSG", "Maybank", "SG")
+                new BankListConfig("DBSSSGSG"),
+                new BankListConfig("OCBCSGSG"),
+                new BankListConfig("ZYBNSGSG")
         );
         AppConfig config = AppConfig.builder()
                 .bankList(bankList)

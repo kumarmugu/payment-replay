@@ -137,11 +137,12 @@ public final class ConfigLoader {
 
     /**
      * Loads the allowed bank list from bank-list.yaml.
+     * Format: simple list of BIC strings under "banks:" key.
      */
     @SuppressWarnings("unchecked")
     public List<BankListConfig> loadBankList() {
         Map<String, Object> yaml = loadYaml(BANK_LIST_YAML);
-        List<Map<String, Object>> banks = (List<Map<String, Object>>) yaml.get("banks");
+        List<Object> banks = (List<Object>) yaml.get("banks");
 
         if (banks == null || banks.isEmpty()) {
             log.warn("No banks configured in {}", BANK_LIST_YAML);
@@ -149,17 +150,13 @@ public final class ConfigLoader {
         }
 
         List<BankListConfig> result = new ArrayList<>();
-        for (Map<String, Object> bank : banks) {
-            String bic = getString(bank, "bic");
-            String name = getString(bank, "name");
-            String country = getString(bank, "country");
-
-            if (bic == null) {
-                log.warn("Skipping bank list entry with missing BIC: {}", bank);
+        for (Object entry : banks) {
+            String bic = entry != null ? entry.toString().trim() : null;
+            if (bic == null || bic.isEmpty()) {
+                log.warn("Skipping empty bank list entry");
                 continue;
             }
-
-            result.add(new BankListConfig(bic, name != null ? name : "", country != null ? country : ""));
+            result.add(new BankListConfig(bic));
         }
 
         log.debug("Loaded {} bank list entries", result.size());
